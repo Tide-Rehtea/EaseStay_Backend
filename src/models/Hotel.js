@@ -93,6 +93,26 @@ const Hotel = sequelize.define('Hotel', {
   updated_at: {
     type: DataTypes.DATE,
     defaultValue: DataTypes.NOW
+  },
+  images: {
+    type: DataTypes.JSON,
+    allowNull: false,
+    defaultValue: [], // 存储图片URL数组
+    validate: {
+      isValidImages(value) {
+        if (!Array.isArray(value)) {
+          throw new Error('images必须是数组');
+        }
+        if (value.length > 10) {
+          throw new Error('最多上传10张图片');
+        }
+        value.forEach(url => {
+          if (typeof url !== 'string' || !url.startsWith('/uploads/')) {
+            throw new Error('图片URL格式不正确');
+          }
+        });
+      }
+    }
   }
 }, {
   tableName: 'hotels',

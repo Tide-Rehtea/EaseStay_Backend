@@ -7,19 +7,30 @@ class HotelController {
       const merchantId = req.user.id;
       const hotelData = req.body;
 
-      // 验证商户身份
-      if (req.user.role !== 'merchant') {
-        return res.status(403).json({
+      // 验证图片数量
+      if (hotelData.images && hotelData.images.length > 10) {
+        return res.status(400).json({
           success: false,
-          message: '只有商户可以创建酒店'
+          message: '最多上传10张图片'
         });
       }
 
-      // 创建酒店
+      // 验证图片URL格式
+      if (hotelData.images) {
+        for (const image of hotelData.images) {
+          if (!image.startsWith('/uploads/')) {
+            return res.status(400).json({
+              success: false,
+              message: '图片URL格式不正确'
+            });
+          }
+        }
+      }
+
       const hotel = await Hotel.create({
         ...hotelData,
         merchant_id: merchantId,
-        status: 'pending' // 默认待审核状态
+        status: 'pending'
       });
 
       res.status(201).json({
@@ -61,10 +72,20 @@ class HotelController {
         }]
       });
 
+      // 转换数据格式 - 将字符串转换为数字
+      const processedHotels = hotels.map(hotel => {
+        const hotelData = hotel.toJSON();
+        return {
+          ...hotelData,
+          price: parseFloat(hotelData.price), // 转换为数字
+          discount: hotelData.discount ? parseFloat(hotelData.discount) : null // 转换为数字或保持null
+        };
+      });
+
       res.json({
         success: true,
         data: {
-          hotels,
+          hotels: processedHotels,
           pagination: {
             total: count,
             page: parseInt(page),
@@ -110,9 +131,17 @@ class HotelController {
         });
       }
 
+      // 转换数据格式
+      const hotelData = hotel.toJSON();
+      const processedHotel = {
+        ...hotelData,
+        price: parseFloat(hotelData.price),
+        discount: hotelData.discount ? parseFloat(hotelData.discount) : null
+      };
+
       res.json({
         success: true,
-        data: { hotel }
+        data: { hotel: processedHotel }
       });
     } catch (error) {
       console.error('获取酒店详情错误:', error);

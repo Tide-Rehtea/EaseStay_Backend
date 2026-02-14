@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 require('dotenv').config();
 
 const { testConnection } = require('./config/db');
@@ -7,6 +8,7 @@ const authRoutes = require('./routes/auth');
 const hotelRoutes = require('./routes/hotels');
 const adminRoutes = require('./routes/admin');
 const errorHandler = require('./middleware/errorHandler');
+const uploadRoutes = require('./routes/upload');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -15,6 +17,9 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// 静态文件服务 - 使上传的图片可以访问
+app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 // 健康检查路由
 app.get('/health', (req, res) => {
@@ -30,6 +35,7 @@ app.get('/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/hotels', hotelRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/upload', uploadRoutes);
 
 // ✅ 修复：将 404 处理放在所有路由之后，但错误处理之前
 // 方法1：直接使用中间件函数（推荐）
