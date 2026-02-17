@@ -69,10 +69,17 @@ const Hotel = sequelize.define('Hotel', {
     type: DataTypes.TEXT,
     allowNull: true
   },
-  status: {
-    type: DataTypes.ENUM('pending', 'approved', 'rejected', 'offline'),
+  // 审核状态
+  review_status: {
+    type: DataTypes.ENUM('pending', 'approved', 'rejected'),
     allowNull: false,
     defaultValue: 'pending'
+  },
+  // 发布状态
+  publish_status: {
+    type: DataTypes.ENUM('published', 'unpublished'),
+    allowNull: false,
+    defaultValue: 'unpublished'
   },
   reject_reason: {
     type: DataTypes.TEXT,
@@ -119,7 +126,7 @@ const Hotel = sequelize.define('Hotel', {
   timestamps: true,
   createdAt: 'created_at',
   updatedAt: 'updated_at',
-  
+
   hooks: {
     beforeUpdate: (hotel) => {
       hotel.updated_at = new Date();

@@ -1,4 +1,7 @@
+// controllers/adminController.js
+
 const { Hotel, User } = require('../models');
+const { Op } = require('sequelize');
 
 class AdminController {
   // 获取所有待审核酒店
@@ -8,7 +11,7 @@ class AdminController {
       const offset = (page - 1) * limit;
 
       const { count, rows: hotels } = await Hotel.findAndCountAll({
-        where: { status: 'pending' },
+        where: { review_status: 'pending' },
         limit: parseInt(limit),
         offset: parseInt(offset),
         order: [['created_at', 'ASC']],
@@ -19,10 +22,24 @@ class AdminController {
         }]
       });
 
+      // 转换酒店数据中的价格和折扣类型
+      const formattedHotels = hotels.map(hotel => {
+        const hotelData = hotel.toJSON();
+        return {
+          ...hotelData,
+          price: parseFloat(hotelData.price),
+          discount: hotelData.discount ? parseFloat(hotelData.discount) : null,
+          room_type: hotelData.room_type ? hotelData.room_type.map(room => ({
+            ...room,
+            price: parseFloat(room.price)
+          })) : []
+        };
+      });
+
       res.json({
         success: true,
         data: {
-          hotels,
+          hotels: formattedHotels,
           pagination: {
             total: count,
             page: parseInt(page),
@@ -62,16 +79,19 @@ class AdminController {
         });
       }
 
-      if (hotel.status !== 'pending') {
+      if (hotel.review_status !== 'pending') {
         return res.status(400).json({
           success: false,
           message: '酒店当前状态不可审核'
         });
       }
 
-      // 更新酒店状态
+      // 更新酒店审核状态
       if (action === 'approve') {
-        await hotel.update({ status: 'approved' });
+        await hotel.update({ 
+          review_status: 'approved'
+          // 注意：不改变 publish_status，保持原有的发布状态
+        });
         return res.json({
           success: true,
           message: '酒店审核通过'
@@ -84,7 +104,7 @@ class AdminController {
           });
         }
         await hotel.update({
-          status: 'rejected',
+          review_status: 'rejected',
           reject_reason
         });
         return res.json({
@@ -123,22 +143,29 @@ class AdminController {
         });
       }
 
+      // 检查审核状态
       if (action === 'publish') {
-        if (hotel.status !== 'approved') {
+        if (hotel.review_status !== 'approved') {
           return res.status(400).json({
             success: false,
-            message: '只有已审核通过的酒店可以发布'
+            message: '只有审核通过的酒店可以发布'
           });
         }
-        await hotel.update({ status: 'approved' }); // 保持approved状态，可以添加published状态
+        if (hotel.publish_status === 'published') {
+          return res.status(400).json({
+            success: false,
+            message: '酒店已处于发布状态'
+          });
+        }
+        await hotel.update({ publish_status: 'published' });
       } else {
-        if (hotel.status === 'offline') {
+        if (hotel.publish_status === 'unpublished') {
           return res.status(400).json({
             success: false,
             message: '酒店已处于下线状态'
           });
         }
-        await hotel.update({ status: 'offline' });
+        await hotel.update({ publish_status: 'unpublished' });
       }
 
       res.json({
@@ -161,7 +188,8 @@ class AdminController {
       const {
         page = 1,
         limit = 10,
-        status,
+        review_status,  // 审核状态
+        publish_status, // 发布状态
         merchant_id,
         start_date,
         end_date
@@ -171,7 +199,8 @@ class AdminController {
       
       // 构建查询条件
       const where = {};
-      if (status) where.status = status;
+      if (review_status) where.review_status = review_status;
+      if (publish_status) where.publish_status = publish_status;
       if (merchant_id) where.merchant_id = merchant_id;
       
       // 日期范围查询
@@ -193,10 +222,24 @@ class AdminController {
         }]
       });
 
+      // 转换所有酒店的价格和折扣类型
+      const formattedHotels = hotels.map(hotel => {
+        const hotelData = hotel.toJSON();
+        return {
+          ...hotelData,
+          price: parseFloat(hotelData.price),
+          discount: hotelData.discount ? parseFloat(hotelData.discount) : null,
+          room_type: hotelData.room_type ? hotelData.room_type.map(room => ({
+            ...room,
+            price: parseFloat(room.price)
+          })) : []
+        };
+      });
+
       res.json({
         success: true,
         data: {
-          hotels,
+          hotels: formattedHotels,
           pagination: {
             total: count,
             page: parseInt(page),
@@ -219,16 +262,26 @@ class AdminController {
   static async getStatistics(req, res) {
     try {
       const totalHotels = await Hotel.count();
-      const pendingHotels = await Hotel.count({ where: { status: 'pending' } });
-      const approvedHotels = await Hotel.count({ where: { status: 'approved' } });
+      const pendingReview = await Hotel.count({ where: { review_status: 'pending' } });
+      const approvedReview = await Hotel.count({ where: { review_status: 'approved' } });
+      const rejectedReview = await Hotel.count({ where: { review_status: 'rejected' } });
+      const publishedHotels = await Hotel.count({ where: { publish_status: 'published' } });
+      const unpublishedHotels = await Hotel.count({ where: { publish_status: 'unpublished' } });
       const totalMerchants = await User.count({ where: { role: 'merchant' } });
 
       res.json({
         success: true,
         data: {
           total_hotels: totalHotels,
-          pending_hotels: pendingHotels,
-          approved_hotels: approvedHotels,
+          review_stats: {
+            pending: pendingReview,
+            approved: approvedReview,
+            rejected: rejectedReview
+          },
+          publish_stats: {
+            published: publishedHotels,
+            unpublished: unpublishedHotels
+          },
           total_merchants: totalMerchants
         }
       });

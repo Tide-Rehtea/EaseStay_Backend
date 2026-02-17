@@ -1,4 +1,7 @@
+// controllers/hotelController.js
+
 const { Hotel, User } = require('../models');
+const { Op } = require('sequelize');
 
 class HotelController {
   // 创建酒店
@@ -30,7 +33,8 @@ class HotelController {
       const hotel = await Hotel.create({
         ...hotelData,
         merchant_id: merchantId,
-        status: 'pending'
+        review_status: 'pending',  // 新创建酒店审核状态为待审核
+        publish_status: 'unpublished' // 新创建酒店发布状态为未发布
       });
 
       res.status(201).json({
@@ -52,12 +56,13 @@ class HotelController {
   static async getMerchantHotels(req, res) {
     try {
       const merchantId = req.user.id;
-      const { page = 1, limit = 10, status } = req.query;
+      const { page = 1, limit = 10, review_status, publish_status } = req.query;
       const offset = (page - 1) * limit;
 
       // 构建查询条件
       const where = { merchant_id: merchantId };
-      if (status) where.status = status;
+      if (review_status) where.review_status = review_status;
+      if (publish_status) where.publish_status = publish_status;
 
       // 查询酒店
       const { count, rows: hotels } = await Hotel.findAndCountAll({
@@ -77,8 +82,8 @@ class HotelController {
         const hotelData = hotel.toJSON();
         return {
           ...hotelData,
-          price: parseFloat(hotelData.price), // 转换为数字
-          discount: hotelData.discount ? parseFloat(hotelData.discount) : null // 转换为数字或保持null
+          price: parseFloat(hotelData.price),
+          discount: hotelData.discount ? parseFloat(hotelData.discount) : null
         };
       });
 
@@ -175,24 +180,116 @@ class HotelController {
         });
       }
 
-      // 商户修改后需要重新审核
-      if (req.user.role === 'merchant' && hotel.status === 'approved') {
-        updateData.status = 'pending';
+      // 商户修改酒店后的状态处理逻辑
+      if (req.user.role === 'merchant') {
+        // 情况1: 已审核通过的酒店 - 修改后需要重新审核，并自动下线
+        // 情况2: 被拒绝的酒店 - 修改后需要重新审核
+        // 情况3: 待审核的酒店 - 保持待审核状态
+
+        if (hotel.review_status === 'approved' || hotel.review_status === 'rejected') {
+          updateData.review_status = 'pending';
+          updateData.publish_status = 'unpublished'; // 修改后自动下线
+
+          // 如果是被拒绝的酒店，清除拒绝原因
+          if (hotel.review_status === 'rejected') {
+            updateData.reject_reason = null;
+          }
+        }
+        // 如果审核状态是 pending，保持不变
       }
 
       // 更新酒店
       await hotel.update(updateData);
 
-      res.json({
+      // 返回成功响应
+      const responseData = {
         success: true,
         message: '酒店更新成功',
         data: { hotel }
-      });
+      };
+
+      // 添加额外的提示信息
+      if (updateData.review_status === 'pending' && hotel.review_status !== 'pending') {
+        responseData.message = '酒店信息更新成功，已重新提交审核';
+      }
+
+      res.json(responseData);
     } catch (error) {
       console.error('更新酒店错误:', error);
       res.status(500).json({
         success: false,
         message: '更新酒店失败',
+        error: error.message
+      });
+    }
+  }
+
+  // 商户自行发布/下线酒店
+  static async togglePublishStatus(req, res) {
+    try {
+      const { id } = req.params;
+      const { action } = req.body; // 'publish' 或 'unpublish'
+
+      if (!['publish', 'unpublish'].includes(action)) {
+        return res.status(400).json({
+          success: false,
+          message: '无效的操作类型'
+        });
+      }
+
+      const hotel = await Hotel.findByPk(id);
+      if (!hotel) {
+        return res.status(404).json({
+          success: false,
+          message: '酒店不存在'
+        });
+      }
+
+      // 权限检查
+      if (hotel.merchant_id !== req.user.id) {
+        return res.status(403).json({
+          success: false,
+          message: '无权操作此酒店'
+        });
+      }
+
+      // 发布检查
+      if (action === 'publish') {
+        if (hotel.review_status !== 'approved') {
+          return res.status(400).json({
+            success: false,
+            message: '只有审核通过的酒店才能发布'
+          });
+        }
+        if (hotel.publish_status === 'published') {
+          return res.status(400).json({
+            success: false,
+            message: '酒店已处于发布状态'
+          });
+        }
+        await hotel.update({ publish_status: 'published' });
+      } else {
+        if (hotel.publish_status === 'unpublished') {
+          return res.status(400).json({
+            success: false,
+            message: '酒店已处于下线状态'
+          });
+        }
+        await hotel.update({ publish_status: 'unpublished' });
+      }
+
+      res.json({
+        success: true,
+        message: `酒店已${action === 'publish' ? '发布' : '下线'}`,
+        data: {
+          publish_status: hotel.publish_status
+        }
+      });
+    } catch (error) {
+      console.error('切换发布状态错误:', error);
+      res.status(500).json({
+        success: false,
+        message: '操作失败',
         error: error.message
       });
     }
@@ -219,7 +316,7 @@ class HotelController {
         });
       }
 
-      // 管理员可以直接删除，商户只能标记为offline
+      // 管理员可以直接删除，商户只能下线（取消发布）
       if (req.user.role === 'admin') {
         await hotel.destroy();
         return res.json({
@@ -227,7 +324,7 @@ class HotelController {
           message: '酒店删除成功'
         });
       } else {
-        await hotel.update({ status: 'offline' });
+        await hotel.update({ publish_status: 'unpublished' });
         return res.json({
           success: true,
           message: '酒店已下线'
