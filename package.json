@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "db:sync": "node src/config/sync-db.js"
+    "db:sync": "node src/config/sync-db.js",
+    "db:sync-mobile": "node src/config/sync-mobile-db.js"
   },
   "keywords": [],
   "author": "",
