@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const http = require('http'); // 1. 添加这行
 require('dotenv').config();
 
 const { testConnection, sequelize } = require('./config/db');
@@ -12,6 +13,9 @@ const uploadRoutes = require('./routes/upload');
 
 // 导入移动端路由
 const mobileRoutes = require('./routes/mobile');
+
+// 2. 导入 WebSocket 工具
+const ChatSocket = require('./utils/chatSocket');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -56,7 +60,14 @@ app.use((req, res, next) => {
 // 错误处理中间件
 app.use(errorHandler);
 
-// 启动服务器
+// 3. 创建 HTTP 服务器（关键！）
+const server = http.createServer(app);
+
+// 4. 初始化 WebSocket 聊天服务
+const chatSocket = new ChatSocket(server);
+chatSocket.initialize();
+
+// 5. 启动服务器（使用 server 而不是 app）
 const startServer = async () => {
   try {
     const dbConnected = await testConnection();
@@ -71,8 +82,9 @@ const startServer = async () => {
       console.log('✅ 数据库模型同步完成');
     }
 
-    app.listen(PORT, () => {
-      console.log(`✅ 服务器运行在: http://localhost:${PORT}`);
+    server.listen(PORT, () => {
+      console.log(`✅ HTTP 服务器运行在: http://localhost:${PORT}`);
+      console.log(`📡 WebSocket 聊天服务运行在: ws://localhost:${PORT}/chat`); // 这行现在会出现
       console.log(`📊 健康检查: http://localhost:${PORT}/health`);
       console.log(`🔐 认证接口: http://localhost:${PORT}/api/auth`);
       console.log(`🏨 酒店接口: http://localhost:${PORT}/api/hotels`);
