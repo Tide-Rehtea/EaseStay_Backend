@@ -1,14 +1,19 @@
 /**
- * WebSocket 聊天工具
+ * WebSocket 聊天工具（接入真实酒店/订单数据）
  */
 
 const WebSocket = require('ws');
 const http = require('http');
+const jwt = require('jsonwebtoken');
+const { Op } = require('sequelize');
+const { Hotel } = require('../models');
+const { Order, MobileUser } = require('../models/mobile');
+const PriceCalculator = require('./priceCalculator');
 
 class ChatSocket {
   constructor(server) {
     this.wss = null;
-    this.clients = new Map(); // sessionId -> { ws, userId, sessionId }
+    this.clients = new Map(); // sessionId -> { ws, userId, sessionId, context }
     this.server = server;
   }
 
@@ -54,16 +59,33 @@ class ChatSocket {
       const sessionId = url.searchParams.get('sessionId') || `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       const token = url.searchParams.get('token');
 
-      console.log(`🔌 新客户端连接，会话ID: ${sessionId}, token: ${token ? '已提供' : '未提供'}`);
+      let userId = null;
+      if (token) {
+        try {
+          const decoded = jwt.verify(token, process.env.JWT_SECRET);
+          userId = decoded.userId;
+        } catch (e) {
+          console.error('❌ WebSocket token 验证失败:', e.message);
+        }
+      }
+
+      console.log(`🔌 新客户端连接，会话ID: ${sessionId}, token: ${token ? '已提供' : '未提供'}, userId: ${userId || '未识别'}`);
       console.log(`🔌 完整URL: ${req.url}`);
 
       // 存储客户端信息
       const clientInfo = {
         ws,
         sessionId,
-        userId: token || null,
+        userId,
         connectedAt: new Date(),
-        lastActivity: new Date()
+        lastActivity: new Date(),
+        // 会话上下文：当前意图、已选择酒店/房型等
+        context: {
+          intent: null,
+          selectedHotel: null,
+          selectedRoom: null,
+          pendingDates: null
+        }
       };
       
       this.clients.set(sessionId, clientInfo);
@@ -121,6 +143,14 @@ class ChatSocket {
         await this.handleUserMessage(sessionId, message.content);
       } else if (message.type === 'action') {
         await this.handleUserAction(sessionId, message.action, message.data);
+      } else if (message.type === 'quick_reply') {
+        await this.handleQuickReply(sessionId, message.actionId, message.data || {});
+      } else if (message.type === 'user_info') {
+        // 前端在连接成功后会发送 user_info，这里补充绑定 userId
+        if (message.userId && !client.userId) {
+          client.userId = message.userId;
+          console.log(`👤 更新 WebSocket 用户ID: ${message.userId} (session: ${sessionId})`);
+        }
       }
 
     } catch (error) {
@@ -152,62 +182,35 @@ class ChatSocket {
 
     // 意图分析
     const intent = this.analyzeIntent(content);
-    
-    let reply;
+    client.context.intent = intent.type;
 
-    switch(intent.type) {
+    switch (intent.type) {
       case 'BOOK_HOTEL':
-        const hotels = [
-          { id: 1, name: '上海外滩华尔道夫酒店', price: 1899 },
-          { id: 2, name: '上海迪士尼乐园酒店', price: 1599 },
-          { id: 3, name: '上海浦东丽思卡尔顿酒店', price: 2199 }
-        ];
-        
-        reply = {
-          type: 'message',
-          content: `为您找到 ${hotels.length} 家酒店，请选择：`,
-          intent: 'book_hotel',
-          data: { hotels },
-          timestamp: new Date().toISOString()
-        };
+        await this.replyHotelList(sessionId);
         break;
-
       case 'CHECK_ORDERS':
-        reply = {
-          type: 'message',
-          content: '您有 3 个订单，需要查看详情吗？',
-          intent: 'show_orders',
-          data: { orderCount: 3 },
-          timestamp: new Date().toISOString()
-        };
+        await this.replyUserOrders(sessionId);
         break;
-
       case 'CANCEL_ORDER':
-        reply = {
-          type: 'message',
-          content: '请提供您要取消的订单号',
-          intent: 'awaiting_order_id',
-          timestamp: new Date().toISOString()
-        };
+        await this.replyCancelableOrders(sessionId);
         break;
-
       case 'RECOMMEND':
-        reply = {
-          type: 'message',
-          content: '为您推荐热门酒店：上海外滩华尔道夫酒店、上海迪士尼乐园酒店',
-          timestamp: new Date().toISOString()
-        };
+        await this.replyHotelRecommendations(sessionId);
         break;
-
       default:
-        reply = {
-          type: 'message',
-          content: `收到您的消息："${content}"。我是智能客服小易，可以帮您预订酒店、查询订单等。`,
-          timestamp: new Date().toISOString()
-        };
+        this.sendToClient(client.ws, {
+          type: 'help',
+          content: `收到您的消息："${content}"。我可以帮您 **预订酒店、查看订单、取消订单**。`,
+          timestamp: new Date().toISOString(),
+          data: {
+            features: [
+              '输入「预订酒店」或点击下方快捷入口开始预订',
+              '输入「我的订单」查看最近订单',
+              '输入「取消订单」快速取消未入住订单'
+            ]
+          }
+        });
     }
-
-    this.sendToClient(client.ws, reply);
   }
 
   /**
@@ -219,32 +222,559 @@ class ChatSocket {
 
     console.log(`🖱️ 用户操作 [${sessionId}]: ${action}`, data);
 
-    switch(action) {
+    switch (action) {
       case 'select_hotel':
-        const hotelId = data.hotelId;
-        
-        this.sendToClient(client.ws, {
-          type: 'message',
-          content: `您已选择酒店 ID: ${hotelId}，正在为您预订...`,
-          timestamp: new Date().toISOString()
-        });
-
-        setTimeout(() => {
-          this.sendToClient(client.ws, {
-            type: 'message',
-            content: '预订成功！订单号：ORD' + Date.now(),
-            timestamp: new Date().toISOString()
-          });
-        }, 1500);
+        await this.handleSelectHotel(sessionId, data);
         break;
-
+      case 'custom_date':
+        await this.handleCustomDateBooking(sessionId, data);
+        break;
+      case 'cancel_order':
+        await this.handleCancelOrder(sessionId, data);
+        break;
       default:
         this.sendToClient(client.ws, {
-          type: 'message',
+          type: 'system',
           content: '操作已收到，正在处理...',
           timestamp: new Date().toISOString()
         });
     }
+  }
+
+  /**
+   * 处理快捷回复（按钮）
+   */
+  async handleQuickReply(sessionId, actionId, data) {
+    const client = this.clients.get(sessionId);
+    if (!client) return;
+
+    console.log(`💬 快捷回复 [${sessionId}]: ${actionId}`, data);
+
+    switch (actionId) {
+      case 'book_hotel':
+        client.context.intent = 'BOOK_HOTEL';
+        this.sendToClient(client.ws, {
+          type: 'system',
+          content: '好的，我们来预订酒店～',
+          timestamp: new Date().toISOString()
+        });
+        await this.replyHotelList(sessionId);
+        break;
+      case 'check_orders':
+        client.context.intent = 'CHECK_ORDERS';
+        await this.replyUserOrders(sessionId);
+        break;
+      case 'cancel_order':
+        client.context.intent = 'CANCEL_ORDER';
+        await this.replyCancelableOrders(sessionId);
+        break;
+      default:
+        this.sendToClient(client.ws, {
+          type: 'system',
+          content: '暂不支持该快捷操作',
+          timestamp: new Date().toISOString()
+        });
+    }
+  }
+
+  /**
+   * 从数据库获取酒店列表并回复
+   */
+  async replyHotelList(sessionId) {
+    const client = this.clients.get(sessionId);
+    if (!client) return;
+
+    try {
+      const hotels = await Hotel.findAll({
+        where: {
+          review_status: 'approved',
+          publish_status: 'published'
+        },
+        attributes: ['id', 'name', 'address', 'star', 'price', 'images'],
+        limit: 5,
+        order: [['price', 'ASC']]
+      });
+
+      if (!hotels || hotels.length === 0) {
+        this.sendToClient(client.ws, {
+          type: 'no_hotels',
+          content: '当前暂无可预订酒店，请稍后再试。',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      const hotelList = hotels.map((h, index) => {
+        const data = h.toJSON();
+        return {
+          index: index + 1,
+          id: data.id,
+          name: data.name,
+          price: parseFloat(data.price),
+          star: data.star,
+          address: data.address
+        };
+      });
+
+      this.sendToClient(client.ws, {
+        type: 'hotel_list',
+        content: '为您找到以下热门酒店，请选择其一继续预订：',
+        timestamp: new Date().toISOString(),
+        data: {
+          hotels: hotelList
+        },
+        actions: hotelList.map(h => ({
+          id: 'select_hotel',
+          title: `${h.index}. ${h.name}`,
+          type: 'hotel_option',
+          data: {
+            hotelId: h.id
+          }
+        }))
+      });
+    } catch (error) {
+      console.error('❌ 获取酒店列表失败(聊天):', error);
+      this.sendToClient(client.ws, {
+        type: 'error',
+        content: '获取酒店列表失败，请稍后重试',
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  /**
+   * 用户选择酒店后，提示选择日期
+   */
+  async handleSelectHotel(sessionId, data) {
+    const client = this.clients.get(sessionId);
+    if (!client) return;
+
+    const hotelId = data?.hotelId;
+    if (!hotelId) {
+      this.sendToClient(client.ws, {
+        type: 'error',
+        content: '未获取到酒店信息，请重试选择酒店',
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
+
+    try {
+      const hotel = await Hotel.findOne({
+        where: {
+          id: hotelId,
+          review_status: 'approved',
+          publish_status: 'published'
+        },
+        attributes: ['id', 'name', 'address', 'star', 'price', 'images', 'discount', 'discount_description']
+      });
+
+      if (!hotel) {
+        this.sendToClient(client.ws, {
+          type: 'error',
+          content: '该酒店已下架或不存在，请重新选择',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      client.context.selectedHotel = hotel.toJSON();
+
+      const now = new Date();
+      const today = now.toISOString().split('T')[0];
+      const tomorrow = new Date(now.getTime() + 86400000).toISOString().split('T')[0];
+      const dayAfterTomorrow = new Date(now.getTime() + 86400000 * 2).toISOString().split('T')[0];
+
+      this.sendToClient(client.ws, {
+        type: 'date_picker',
+        content: `已为您选择「${client.context.selectedHotel.name}」，请选择入住和离店日期：`,
+        timestamp: new Date().toISOString(),
+        actions: [
+          {
+            id: 'date_option_today',
+            title: `今天(${today}) - 明天(${tomorrow})`,
+            type: 'button',
+            data: { checkIn: today, checkOut: tomorrow }
+          },
+          {
+            id: 'date_option_tomorrow',
+            title: `明天(${tomorrow}) - 后天(${dayAfterTomorrow})`,
+            type: 'button',
+            data: { checkIn: tomorrow, checkOut: dayAfterTomorrow }
+          },
+          {
+            id: 'custom_date',
+            title: '自定义日期',
+            type: 'date_picker'
+          }
+        ]
+      });
+    } catch (error) {
+      console.error('❌ 处理选择酒店失败:', error);
+      this.sendToClient(client.ws, {
+        type: 'error',
+        content: '处理酒店选择失败，请稍后重试',
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  /**
+   * 自定义日期选择后，创建真实订单
+   */
+  async handleCustomDateBooking(sessionId, data) {
+    const client = this.clients.get(sessionId);
+    if (!client) return;
+
+    if (!client.userId) {
+      this.sendToClient(client.ws, {
+        type: 'error',
+        content: '请先登录后再通过客服预订酒店。',
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
+
+    const hotel = client.context.selectedHotel;
+    if (!hotel) {
+      this.sendToClient(client.ws, {
+        type: 'error',
+        content: '尚未选择酒店，请先选择酒店。',
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
+
+    const checkIn = data?.checkIn;
+    const checkOut = data?.checkOut;
+
+    if (!checkIn || !checkOut) {
+      this.sendToClient(client.ws, {
+        type: 'error',
+        content: '请选择完整的入住和离店日期。',
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
+
+    try {
+      const checkInDate = new Date(checkIn);
+      const checkOutDate = new Date(checkOut);
+      const diff = (checkOutDate - checkInDate) / 86400000;
+      const nights = Number.isNaN(diff) || diff <= 0 ? 1 : diff;
+
+      const mobileUser = await MobileUser.findOne({ where: { user_id: client.userId } });
+
+      if (!mobileUser || !mobileUser.phone) {
+        this.sendToClient(client.ws, {
+          type: 'error',
+          content: '您的手机号信息不完整，请先在个人中心完善资料后再通过客服预订。',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      const basePrice = parseFloat(hotel.price);
+      const memberDiscount = mobileUser ? PriceCalculator.getMemberDiscount(mobileUser.member_level) : 1;
+
+      const priceCalculation = PriceCalculator.calculateTotalPrice(basePrice, {
+        nights,
+        rooms: 1,
+        discount: hotel.discount ? parseFloat(hotel.discount) : null,
+        memberDiscount: memberDiscount < 1 ? memberDiscount : null
+      });
+
+      const order = await Order.create({
+        user_id: client.userId,
+        hotel_id: hotel.id,
+        room_info: {
+          name: '标准房',
+          price: basePrice,
+          booked_price: basePrice
+        },
+        check_in_date: checkIn,
+        check_out_date: checkOut,
+        nights,
+        rooms_count: 1,
+        adults: 2,
+        children: 0,
+        room_price: basePrice,
+        total_price: priceCalculation.originalTotal,
+        discount_amount: priceCalculation.totalDiscount,
+        actual_payment: priceCalculation.finalTotal,
+        contact_name: mobileUser.nickname || `用户${client.userId}`,
+        contact_phone: mobileUser.phone,
+        special_requests: null,
+        order_status: '待支付'
+      });
+
+      this.sendToClient(client.ws, {
+        type: 'booking_success',
+        content: '预订成功！请在订单详情中完成支付。',
+        timestamp: new Date().toISOString(),
+        data: {
+          orderId: order.id,
+          hotel: hotel.name,
+          totalPrice: order.actual_payment
+        }
+      });
+    } catch (error) {
+      console.error('❌ 通过聊天创建订单失败:', error);
+      this.sendToClient(client.ws, {
+        type: 'error',
+        content: '创建订单失败，请稍后在酒店详情页尝试预订。',
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  /**
+   * 回复用户订单列表（查看订单）
+   */
+  async replyUserOrders(sessionId) {
+    const client = this.clients.get(sessionId);
+    if (!client) return;
+
+    if (!client.userId) {
+      this.sendToClient(client.ws, {
+        type: 'error',
+        content: '请先登录后再查看订单。',
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
+
+    try {
+      const orders = await Order.findAll({
+        where: { user_id: client.userId },
+        include: [
+          {
+            model: Hotel,
+            as: 'hotel',
+            attributes: ['id', 'name', 'address']
+          }
+        ],
+        order: [['created_at', 'DESC']],
+        limit: 5
+      });
+
+      if (!orders || orders.length === 0) {
+        this.sendToClient(client.ws, {
+          type: 'order_list',
+          content: '您当前还没有任何订单。',
+          timestamp: new Date().toISOString(),
+          data: { orders: [] }
+        });
+        return;
+      }
+
+      const list = orders.map((order, index) => {
+        const statusInfo = this.mapOrderStatusInfo(order.order_status);
+        return {
+          index: index + 1,
+          id: order.id,
+          hotelName: order.hotel?.name || '未知酒店',
+          checkIn: order.check_in_date,
+          checkOut: order.check_out_date,
+          totalPrice: order.actual_payment,
+          status: order.order_status,
+          statusInfo
+        };
+      });
+
+      this.sendToClient(client.ws, {
+        type: 'order_list',
+        content: '这是您最近的订单：',
+        timestamp: new Date().toISOString(),
+        data: { orders: list }
+      });
+    } catch (error) {
+      console.error('❌ 获取订单列表失败(聊天):', error);
+      this.sendToClient(client.ws, {
+        type: 'error',
+        content: '获取订单列表失败，请稍后重试。',
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  /**
+   * 回复用户可取消的订单列表
+   */
+  async replyCancelableOrders(sessionId) {
+    const client = this.clients.get(sessionId);
+    if (!client) return;
+
+    if (!client.userId) {
+      this.sendToClient(client.ws, {
+        type: 'error',
+        content: '请先登录后再取消订单。',
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
+
+    try {
+      const orders = await Order.findAll({
+        where: {
+          user_id: client.userId,
+          order_status: { [Op.in]: ['待支付', '已支付'] }
+        },
+        include: [
+          {
+            model: Hotel,
+            as: 'hotel',
+            attributes: ['id', 'name', 'address']
+          }
+        ],
+        order: [['created_at', 'DESC']],
+        limit: 5
+      });
+
+      if (!orders || orders.length === 0) {
+        this.sendToClient(client.ws, {
+          type: 'order_list',
+          content: '当前没有可取消的订单。',
+          timestamp: new Date().toISOString(),
+          data: { orders: [] }
+        });
+        return;
+      }
+
+      const list = orders.map((order, index) => {
+        const statusInfo = this.mapOrderStatusInfo(order.order_status);
+        return {
+          index: index + 1,
+          id: order.id,
+          hotelName: order.hotel?.name || '未知酒店',
+          checkIn: order.check_in_date,
+          checkOut: order.check_out_date,
+          totalPrice: order.actual_payment,
+          status: order.order_status,
+          statusInfo
+        };
+      });
+
+      this.sendToClient(client.ws, {
+        type: 'order_list',
+        content: '以下订单支持取消，请选择要取消的订单：',
+        timestamp: new Date().toISOString(),
+        data: { orders: list },
+        actions: list.map(order => ({
+          id: 'cancel_order',
+          title: `取消订单 ${order.index}`,
+          type: 'danger_button',
+          data: { orderId: order.id }
+        }))
+      });
+    } catch (error) {
+      console.error('❌ 获取可取消订单失败(聊天):', error);
+      this.sendToClient(client.ws, {
+        type: 'error',
+        content: '获取可取消订单失败，请稍后重试。',
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  /**
+   * 取消指定订单
+   */
+  async handleCancelOrder(sessionId, data) {
+    const client = this.clients.get(sessionId);
+    if (!client) return;
+
+    if (!client.userId) {
+      this.sendToClient(client.ws, {
+        type: 'error',
+        content: '请先登录后再取消订单。',
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
+
+    const orderId = data?.orderId;
+    if (!orderId) {
+      this.sendToClient(client.ws, {
+        type: 'error',
+        content: '未获取到订单信息，请重新选择要取消的订单。',
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
+
+    try {
+      const order = await Order.findOne({
+        where: {
+          id: orderId,
+          user_id: client.userId
+        }
+      });
+
+      if (!order) {
+        this.sendToClient(client.ws, {
+          type: 'error',
+          content: '订单不存在。',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      if (!['待支付', '已支付'].includes(order.order_status)) {
+        this.sendToClient(client.ws, {
+          type: 'error',
+          content: '当前订单状态不可取消。',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      await order.update({
+        order_status: '已取消',
+        cancel_reason: '用户通过智能客服取消',
+        cancel_time: new Date()
+      });
+
+      this.sendToClient(client.ws, {
+        type: 'cancel_success',
+        content: `订单已成功取消（订单号：${order.order_no}）。`,
+        timestamp: new Date().toISOString(),
+        data: {
+          orderId: order.id,
+          orderNo: order.order_no
+        }
+      });
+    } catch (error) {
+      console.error('❌ 取消订单失败(聊天):', error);
+      this.sendToClient(client.ws, {
+        type: 'error',
+        content: '取消订单失败，请稍后在订单详情页尝试操作。',
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  /**
+   * 推荐酒店（简单复用列表逻辑）
+   */
+  async replyHotelRecommendations(sessionId) {
+    await this.replyHotelList(sessionId);
+  }
+
+  /**
+   * 将订单状态映射为前端展示用的颜色/文案
+   */
+  mapOrderStatusInfo(status) {
+    const map = {
+      '待支付': { text: '待支付', color: '#FF9500' },
+      '已支付': { text: '待入住', color: '#007AFF' },
+      '已确认': { text: '待入住', color: '#007AFF' },
+      '入住中': { text: '入住中', color: '#4CD964' },
+      '已完成': { text: '已完成', color: '#4CD964' },
+      '已取消': { text: '已取消', color: '#999999' },
+      '已退款': { text: '已退款', color: '#999999' }
+    };
+    return map[status] || { text: status, color: '#999999' };
   }
 
   /**
