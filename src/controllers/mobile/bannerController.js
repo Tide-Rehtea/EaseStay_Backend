@@ -1,4 +1,5 @@
-const { Banner, Hotel } = require('../../models/mobile');
+const { Banner } = require('../../models/mobile');
+const Hotel = require('../../models/Hotel');
 const ResponseUtil = require('../../utils/response');
 const { Op } = require('sequelize');
 
