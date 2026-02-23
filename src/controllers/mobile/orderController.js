@@ -252,7 +252,7 @@ class OrderController {
         include: [{
           model: Hotel,
           as: 'hotel',
-          attributes: ['id', 'name', 'name_en', 'address', 'phone', 'star', 'images']
+          attributes: ['id', 'name', 'name_en', 'address', 'star', 'images']
         }]
       });
 
@@ -268,7 +268,7 @@ class OrderController {
           name: order.hotel.name,
           name_en: order.hotel.name_en,
           address: order.hotel.address,
-          phone: order.hotel.phone,
+          phone: order.hotel.phone ?? null,
           star: order.hotel.star,
           image: order.hotel.images?.[0] || '/uploads/default-hotel.jpg',
           images: order.hotel.images || []
