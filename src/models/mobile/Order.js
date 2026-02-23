@@ -156,14 +156,16 @@ const Order = sequelize.define('Order', {
   updatedAt: 'updated_at',
 
   hooks: {
-    beforeCreate: async (order) => {
-      // 生成唯一订单号：日期+随机数
-      const date = new Date();
-      const year = date.getFullYear();
-      const month = String(date.getMonth() + 1).padStart(2, '0');
-      const day = String(date.getDate()).padStart(2, '0');
-      const random = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
-      order.order_no = `E${year}${month}${day}${random}`;
+    beforeValidate: (order) => {
+      // 在验证前生成订单号，否则 notNull 验证会失败
+      if (!order.order_no) {
+        const date = new Date();
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        const random = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
+        order.order_no = `E${year}${month}${day}${random}`;
+      }
     }
   }
 });
