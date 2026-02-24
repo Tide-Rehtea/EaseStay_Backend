@@ -167,19 +167,18 @@ class OrderController {
       // 构建查询条件
       const where = { user_id: req.user.id };
       
-      if (status && status !== '全部') {
-        switch (status) {
-          case '待入住':
-            where.order_status = { [Op.in]: ['待支付', '已支付', '已确认'] };
+      // status: all/全部=不筛选 paid=已支付 cancelled=已取消
+      const statusVal = status ? String(status).toLowerCase().trim() : '';
+      if (statusVal && statusVal !== '全部' && statusVal !== 'all') {
+        switch (statusVal) {
+          case 'paid':
+            // 已支付：仅包含已付款订单，排除待支付和已取消
+            where.order_status = { [Op.in]: ['已支付', '已确认', '入住中', '已完成'] };
             break;
-          case '已入住':
-            where.order_status = { [Op.in]: ['入住中', '已完成'] };
-            break;
-          case '已取消':
+          case 'cancelled':
             where.order_status = { [Op.in]: ['已取消', '已退款'] };
             break;
           default:
-            // 全部订单，不添加状态筛选
             break;
         }
       }

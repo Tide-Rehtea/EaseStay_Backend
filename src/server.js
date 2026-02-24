@@ -1,8 +1,9 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-const http = require('http'); // 1. 添加这行
+const http = require('http');
 require('dotenv').config();
+const { API_BASE } = require('./config/server');
 
 const { testConnection, sequelize } = require('./config/db');
 const authRoutes = require('./routes/auth');
@@ -83,13 +84,14 @@ const startServer = async () => {
     }
 
     server.listen(PORT, () => {
-      console.log(`✅ HTTP 服务器运行在: http://localhost:${PORT}`);
-      console.log(`📡 WebSocket 聊天服务运行在: ws://localhost:${PORT}/chat`); // 这行现在会出现
-      console.log(`📊 健康检查: http://localhost:${PORT}/health`);
-      console.log(`🔐 认证接口: http://localhost:${PORT}/api/auth`);
-      console.log(`🏨 酒店接口: http://localhost:${PORT}/api/hotels`);
-      console.log(`👑 管理接口: http://localhost:${PORT}/api/admin`);
-      console.log(`📱 移动端接口: http://localhost:${PORT}/api/mobile`);
+      const base = API_BASE.replace(/^http/, 'ws');
+      console.log(`✅ HTTP 服务器运行在: ${API_BASE}`);
+      console.log(`📡 WebSocket 聊天服务运行在: ${base}/chat`);
+      console.log(`📊 健康检查: ${API_BASE}/health`);
+      console.log(`🔐 认证接口: ${API_BASE}/api/auth`);
+      console.log(`🏨 酒店接口: ${API_BASE}/api/hotels`);
+      console.log(`👑 管理接口: ${API_BASE}/api/admin`);
+      console.log(`📱 移动端接口: ${API_BASE}/api/mobile`);
     });
   } catch (error) {
     console.error('❌ 服务器启动失败:', error);

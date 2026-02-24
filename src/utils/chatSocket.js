@@ -39,14 +39,13 @@ class ChatSocket {
   }
 
   /**
-   * 获取服务器地址
+   * 获取服务器地址（使用 config/server 统一配置）
    */
   getServerAddress() {
+    const { API_HOST, API_PORT } = require('../config/server');
     const address = this.server.address();
-    if (typeof address === 'string') {
-      return address;
-    }
-    return `http://localhost:${address?.port || 3001}`;
+    if (typeof address === 'string') return address;
+    return `http://${API_HOST}:${address?.port ?? API_PORT}`;
   }
 
   /**
@@ -767,10 +766,10 @@ class ChatSocket {
   mapOrderStatusInfo(status) {
     const map = {
       '待支付': { text: '待支付', color: '#FF9500' },
-      '已支付': { text: '待入住', color: '#007AFF' },
-      '已确认': { text: '待入住', color: '#007AFF' },
-      '入住中': { text: '入住中', color: '#4CD964' },
-      '已完成': { text: '已完成', color: '#4CD964' },
+      '已支付': { text: '已支付', color: '#007AFF' },
+      '已确认': { text: '已支付', color: '#007AFF' },
+      '入住中': { text: '已支付', color: '#007AFF' },
+      '已完成': { text: '已支付', color: '#007AFF' },
       '已取消': { text: '已取消', color: '#999999' },
       '已退款': { text: '已退款', color: '#999999' }
     };
