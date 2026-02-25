@@ -16,21 +16,25 @@ class CityController {
     try {
       const { latitude, longitude } = req.query;
 
+      console.log('\n========== 定位接口被调用 ==========');
+      console.log('收到参数 latitude:', latitude, 'longitude:', longitude);
+
       let cityInfo;
 
       if (latitude && longitude) {
-        // 如果有经纬度，根据定位获取城市
+        console.log('有经纬度，调用逆地理编码...');
         cityInfo = await LocationUtil.getCityByCoordinates(latitude, longitude);
+        console.log('逆地理返回:', cityInfo.city, cityInfo.city_code);
       } else {
-        // 没有定位，返回默认城市
+        console.log('无经纬度，使用默认上海');
         cityInfo = {
           city: '上海',
           city_code: '021'
         };
       }
 
-      // 如果用户已登录，保存本次定位
-      if (req.user) {
+      // 如果用户已登录且定位成功，保存本次定位
+      if (req.user && cityInfo.city !== '定位失败') {
         await UserAddress.upsert({
           user_id: req.user.id,
           city: cityInfo.city,
@@ -41,6 +45,8 @@ class CityController {
         });
       }
 
+      console.log('========== 定位接口结束 ==========\n');
+
       return ResponseUtil.success(res, {
         current: cityInfo.city,
         code: cityInfo.city_code,
@@ -49,11 +55,10 @@ class CityController {
 
     } catch (error) {
       console.error('获取当前城市错误:', error);
-      // 出错时返回默认城市
       return ResponseUtil.success(res, {
-        current: '上海',
-        code: '021',
-        locations: { city: '上海', city_code: '021' }
+        current: '定位失败',
+        code: '000',
+        locations: { city: '定位失败', city_code: '000' }
       });
     }
   }
